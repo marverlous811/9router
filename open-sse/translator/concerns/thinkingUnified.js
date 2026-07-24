@@ -343,7 +343,18 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
   if (!cfg) return body;
 
   const fmt = resolveFormat(targetFormat, cleanModel, provider);
+  // Codex CLI and other Responses clients can attach transport extensions such
+  // as reasoning.context. Keep those fields when normalizing effort/summary;
+  // dropping context makes some compatible /responses backends accept the
+  // request but never emit a response stream.
+  const responsesReasoning = fmt === "openai-responses" && body.reasoning &&
+    typeof body.reasoning === "object" && !Array.isArray(body.reasoning)
+    ? { ...body.reasoning }
+    : null;
   stripAll(body);
   applyFormat(fmt, body, cfg, caps);
+  if (responsesReasoning) {
+    body.reasoning = { ...responsesReasoning, ...body.reasoning };
+  }
   return body;
 }

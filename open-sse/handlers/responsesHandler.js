@@ -43,6 +43,7 @@ export async function handleResponsesCore({ body, modelInfo, credentials, log, o
     onRequestSuccess,
     onDisconnect,
     connectionId,
+    requestDetailBody: body,
     sourceFormatOverride: "openai-responses"
   });
 
@@ -96,4 +97,3 @@ export async function handleResponsesCore({ body, modelInfo, credentials, log, o
   // Case 3: Non-SSE response (error or non-streaming from provider) - return as-is
   return result;
 }
-
