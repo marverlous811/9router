@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { CODEX_RESPONSES_PASSTHROUGH_HEADERS } from "../../open-sse/config/codexHeaders.js";
 import { DefaultExecutor } from "../../open-sse/executors/default.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 import { translateRequest } from "../../open-sse/translator/index.js";
+import {
+  mergeCodexResponsesHeaders,
+  selectCodexResponsesHeaders,
+} from "../../open-sse/utils/codexHeaders.js";
 
 const CODEX_HEADERS = {
   originator: "codex_cli_rs",
@@ -102,6 +107,88 @@ function expectChatCompletionsHeaders(headers) {
 }
 
 describe("Codex Responses metadata passthrough", () => {
+  it("defines the immutable Responses metadata allowlist", () => {
+    expect(CODEX_RESPONSES_PASSTHROUGH_HEADERS).toEqual(CODEX_HEADER_NAMES);
+    expect(Object.isFrozen(CODEX_RESPONSES_PASSTHROUGH_HEADERS)).toBe(true);
+  });
+
+  it.each([
+    ["lowercase", CODEX_HEADERS],
+    ["case variants", CASE_VARIANT_CODEX_HEADERS],
+  ])("selects all allowlisted names from %s input", (_label, rawHeaders) => {
+    expect(selectCodexResponsesHeaders(rawHeaders)).toEqual(CODEX_HEADERS);
+  });
+
+  it("defaults to denying sensitive and unreviewed headers", () => {
+    expect(selectCodexResponsesHeaders({
+      ...CODEX_HEADERS,
+      ...CASE_VARIANT_SENSITIVE_HEADERS,
+    })).toEqual(CODEX_HEADERS);
+  });
+
+  it("normalizes values and skips empty or absent values", () => {
+    expect(selectCodexResponsesHeaders({
+      Originator: null,
+      "Session-Id": undefined,
+      "Thread-Id": "",
+      "User-Agent": ["codex", "cli"],
+      "X-Client-Request-Id": 42,
+      "X-Codex-Beta-Features": true,
+      "X-Codex-Turn-Metadata": { request_kind: "turn" },
+      "X-Codex-Window-Id": 0,
+      "X-OpenAI-Internal-Codex-Responses-Lite": false,
+    })).toEqual({
+      "user-agent": "codex, cli",
+      "x-client-request-id": "42",
+      "x-codex-beta-features": "true",
+      "x-codex-turn-metadata": "[object Object]",
+      "x-codex-window-id": "0",
+      "x-openai-internal-codex-responses-lite": "false",
+    });
+    expect(selectCodexResponsesHeaders(null)).toEqual({});
+    expect(selectCodexResponsesHeaders("not headers")).toEqual({});
+  });
+
+  it("selects headers without mutating its input", () => {
+    const rawHeaders = {
+      ...CASE_VARIANT_CODEX_HEADERS,
+      "User-Agent": ["codex", "cli"],
+    };
+    const snapshot = structuredClone(rawHeaders);
+
+    selectCodexResponsesHeaders(rawHeaders);
+
+    expect(rawHeaders).toEqual(snapshot);
+  });
+
+  it("merges selected headers with case-insensitive replacement and no mutation", () => {
+    const baseHeaders = {
+      Authorization: "Bearer router-secret",
+      "User-Agent": "router-default",
+      "USER-AGENT": "router-duplicate",
+      "X-Unrelated": "preserved",
+    };
+    const rawHeaders = {
+      Originator: "codex_cli_rs",
+      "uSeR-aGeNt": "codex_cli_rs/0.145.0",
+      Cookie: "must-not-pass",
+    };
+    const baseSnapshot = structuredClone(baseHeaders);
+    const rawSnapshot = structuredClone(rawHeaders);
+
+    const result = mergeCodexResponsesHeaders(baseHeaders, rawHeaders);
+
+    expect(result).toEqual({
+      Authorization: "Bearer router-secret",
+      "X-Unrelated": "preserved",
+      originator: "codex_cli_rs",
+      "user-agent": "codex_cli_rs/0.145.0",
+    });
+    expect(findHeaders(result, "user-agent")).toHaveLength(1);
+    expect(baseHeaders).toEqual(baseSnapshot);
+    expect(rawHeaders).toEqual(rawSnapshot);
+  });
+
   it("forwards only allowlisted metadata to dynamic Responses providers", () => {
     const executor = new DefaultExecutor("openai-compatible-responses-test");
     const productionHeaders = executor.buildHeaders({
