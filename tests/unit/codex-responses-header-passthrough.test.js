@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CODEX_RESPONSES_PASSTHROUGH_HEADERS } from "../../open-sse/config/codexHeaders.js";
 import { DefaultExecutor } from "../../open-sse/executors/default.js";
+import { getExecutor, hasSpecializedExecutor } from "../../open-sse/executors/index.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 import { translateRequest } from "../../open-sse/translator/index.js";
 import {
@@ -218,6 +219,18 @@ describe("Codex Responses metadata passthrough", () => {
     expectNativeResponsesHeaders(headers);
   });
 
+  it("forwards metadata through the default executor for a registered static Responses provider", () => {
+    expect(hasSpecializedExecutor("perplexity-agent")).toBe(false);
+    const executor = getExecutor("perplexity-agent");
+    expect(executor).toBeInstanceOf(DefaultExecutor);
+    const headers = executor.buildHeaders({
+      apiKey: "router-secret",
+      rawHeaders: { ...CASE_VARIANT_CODEX_HEADERS, ...CASE_VARIANT_SENSITIVE_HEADERS },
+    }, true);
+
+    expectNativeResponsesHeaders(headers);
+  });
+
   it("does not forward Codex metadata to Chat Completions transports", () => {
     const executor = new DefaultExecutor("openai-compatible-test");
     const dynamicHeaders = executor.buildHeaders({
@@ -236,6 +249,17 @@ describe("Codex Responses metadata passthrough", () => {
       },
     }, true);
     expectChatCompletionsHeaders(runtimeHeaders);
+
+    const staticResponsesExecutor = new DefaultExecutor("perplexity-agent");
+    const runtimeChatHeaders = staticResponsesExecutor.buildHeaders({
+      apiKey: "router-secret",
+      rawHeaders: { ...CASE_VARIANT_CODEX_HEADERS, ...CASE_VARIANT_SENSITIVE_HEADERS },
+      runtimeTransport: {
+        format: FORMATS.OPENAI,
+        headers: { "User-Agent": "router-chat-default" },
+      },
+    }, true);
+    expectChatCompletionsHeaders(runtimeChatHeaders);
   });
 
   it("keeps encrypted agent_message input unchanged on native Responses routes", () => {
