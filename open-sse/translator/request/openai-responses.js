@@ -260,7 +260,14 @@ function buildReasoningInputItem(msg) {
  */
 export function openaiToOpenAIResponsesRequest(model, body, stream, credentials) {
   // Body already in Responses API format (e.g. Cursor CLI calling /chat/completions with input[])
-  if (body.input) return { ...body, model, stream: true };
+  if (body.input) {
+    const result = { ...body, model, stream: true };
+    if (result.max_tokens !== undefined) {
+      if (result.max_output_tokens === undefined) result.max_output_tokens = result.max_tokens;
+      delete result.max_tokens;
+    }
+    return result;
+  }
 
   const result = {
     model,
@@ -376,7 +383,7 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
 
   // Pass through other relevant fields
   if (body.temperature !== undefined) result.temperature = body.temperature;
-  if (body.max_tokens !== undefined) result.max_tokens = body.max_tokens;
+  if (body.max_tokens !== undefined) result.max_output_tokens = body.max_tokens;
   if (body.top_p !== undefined) result.top_p = body.top_p;
   if (body.reasoning !== undefined) result.reasoning = body.reasoning;
   if (body.reasoning_effort !== undefined) result.reasoning = { effort: body.reasoning_effort, summary: "auto" };
