@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseTOML, stringifyTOML } from "confbox";
 import {
   apply9RouterCodexConfig,
   buildCodexManualConfig,
@@ -132,4 +133,24 @@ default_subagent_model = "lumi/gpt-5.6-terra"
     expect(preview).toContain('default_subagent_model = "lumi/gpt-5.6-terra"');
     expect(preview).not.toContain("[agents.subagent]");
   });
+});
+
+it("survives the same confbox serialization round trip used by the API", () => {
+  const applied = apply9RouterCodexConfig(parseTOML(`
+approval_policy = "never"
+
+[agents]
+max_concurrent_threads_per_session = 4
+`), {
+    baseUrl: "http://localhost:20128/v1",
+    model: "lumi/gpt-5.6-sol",
+    subagentModel: "lumi/gpt-5.6-terra",
+  });
+
+  const reparsed = parseTOML(stringifyTOML(applied));
+  expect(reparsed.agents).toEqual({
+    max_concurrent_threads_per_session: 4,
+    default_subagent_model: "lumi/gpt-5.6-terra",
+  });
+  expect(reparsed.approval_policy).toBe("never");
 });
