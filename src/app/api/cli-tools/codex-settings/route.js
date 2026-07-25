@@ -103,7 +103,9 @@ export async function POST(request) {
     try {
       const existingConfig = await fs.readFile(configPath, "utf-8");
       parsed = parseTOML(existingConfig) ?? {};
-    } catch { /* No existing config */ }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
 
     // Ensure /v1 suffix is added only once
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
