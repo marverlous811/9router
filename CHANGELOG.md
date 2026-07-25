@@ -7,6 +7,7 @@
 - **Dashboard**: ProviderTopology flow animation
 
 ## Fixes
+- **Codex**: write the current `agents.default_subagent_model` setting and preserve unrelated agent configuration.
 - **Codex**: fix subagents returning empty results through native Responses connections by safely forwarding allowlisted turn metadata without forwarding client credentials.
 - **DB**: resolve better-sqlite3 parameter binding crash
 - **Translator**: pass `service_tier` through OpenAI → Responses conversion
