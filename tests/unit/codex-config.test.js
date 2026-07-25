@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   apply9RouterCodexConfig,
+  buildCodexManualConfig,
+  readCodexConfiguredModels,
   reset9RouterCodexConfig,
 } from "../../src/lib/codexConfig.js";
 
@@ -97,5 +99,37 @@ describe("reset9RouterCodexConfig", () => {
     expect(result.model).toBe("third-party-model");
     expect(result.model_provider).toBe("third-party");
     expect(result.agents).toBeUndefined();
+  });
+});
+
+describe("Codex dashboard configuration helpers", () => {
+  it("reads the main and current default subagent models from TOML", () => {
+    expect(readCodexConfiguredModels(`
+model = "lumi/gpt-5.6-sol"
+
+[agents]
+enabled = true
+default_subagent_model = "lumi/gpt-5.6-terra"
+`)).toEqual({
+      model: "lumi/gpt-5.6-sol",
+      subagentModel: "lumi/gpt-5.6-terra",
+    });
+  });
+
+  it("returns empty model values for absent or invalid TOML", () => {
+    expect(readCodexConfiguredModels(null)).toEqual({ model: "", subagentModel: "" });
+    expect(readCodexConfiguredModels("not = [valid")).toEqual({ model: "", subagentModel: "" });
+  });
+
+  it("builds a manual preview using the current schema", () => {
+    const preview = buildCodexManualConfig({
+      baseUrl: "http://localhost:20128/v1",
+      model: "lumi/gpt-5.6-sol",
+      subagentModel: "lumi/gpt-5.6-terra",
+    });
+
+    expect(preview).toContain("[agents]");
+    expect(preview).toContain('default_subagent_model = "lumi/gpt-5.6-terra"');
+    expect(preview).not.toContain("[agents.subagent]");
   });
 });

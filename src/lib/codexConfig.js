@@ -1,3 +1,5 @@
+import { parseTOML, stringifyTOML } from "confbox";
+
 function cloneConfig(config) {
   return structuredClone(config ?? {});
 }
@@ -42,4 +44,26 @@ export function reset9RouterCodexConfig(config) {
     removeEmptyObject(next, "agents");
   }
   return next;
+}
+
+export function readCodexConfiguredModels(configContent) {
+  if (!configContent || typeof configContent !== "string") {
+    return { model: "", subagentModel: "" };
+  }
+  try {
+    const parsed = parseTOML(configContent);
+    return {
+      model: typeof parsed?.model === "string" ? parsed.model : "",
+      subagentModel: typeof parsed?.agents?.default_subagent_model === "string"
+        ? parsed.agents.default_subagent_model
+        : "",
+    };
+  } catch {
+    return { model: "", subagentModel: "" };
+  }
+}
+
+export function buildCodexManualConfig(options) {
+  const config = apply9RouterCodexConfig({}, options);
+  return `# 9Router Configuration for Codex CLI\n${stringifyTOML(config)}`;
 }
