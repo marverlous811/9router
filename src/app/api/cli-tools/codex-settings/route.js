@@ -7,39 +7,16 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
+import {
+  apply9RouterCodexConfig,
+  reset9RouterCodexConfig,
+} from "@/lib/codexConfig.js";
 
 const execAsync = promisify(exec);
 
 const getCodexDir = () => path.join(os.homedir(), ".codex");
 const getCodexConfigPath = () => path.join(getCodexDir(), "config.toml");
 const getCodexAuthPath = () => path.join(getCodexDir(), "auth.json");
-
-// Flatten confbox-parsed TOML into a writable object, preserving nested tables
-const parsedToWritable = (obj) => obj ?? {};
-
-// Set a nested key from a flat dotted path, creating intermediate objects as needed
-const setNestedSection = (obj, dottedKey, value) => {
-  const keys = dottedKey.split(".");
-  let cur = obj;
-  for (let i = 0; i < keys.length - 1; i++) {
-    if (cur[keys[i]] == null || typeof cur[keys[i]] !== "object") {
-      cur[keys[i]] = {};
-    }
-    cur = cur[keys[i]];
-  }
-  cur[keys[keys.length - 1]] = value;
-};
-
-// Delete a nested key from a flat dotted path
-const deleteNestedSection = (obj, dottedKey) => {
-  const keys = dottedKey.split(".");
-  let cur = obj;
-  for (let i = 0; i < keys.length - 1; i++) {
-    cur = cur?.[keys[i]];
-    if (cur == null) return;
-  }
-  delete cur[keys[keys.length - 1]];
-};
 
 // Check if codex CLI is installed (via which/where or config file exists)
 const checkCodexInstalled = async () => {
@@ -125,26 +102,17 @@ export async function POST(request) {
     let parsed = {};
     try {
       const existingConfig = await fs.readFile(configPath, "utf-8");
-      parsed = parsedToWritable(parseTOML(existingConfig));
-    } catch { /* No existing config */ }
+      parsed = parseTOML(existingConfig) ?? {};
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
 
-    // Update only 9Router related fields (api_key goes to auth.json, not config.toml)
-    parsed.model = model;
-    parsed.model_provider = "9router";
-
-    // Update or create 9router provider section (no api_key - Codex reads from auth.json)
     // Ensure /v1 suffix is added only once
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
-    setNestedSection(parsed, "model_providers.9router", {
-      name: "9Router",
-      base_url: normalizedBaseUrl,
-      wire_api: "responses",
-    });
-
-    // Add subagent configuration
-    const effectiveSubagentModel = subagentModel || model;
-    setNestedSection(parsed, "agents.subagent", {
-      model: effectiveSubagentModel,
+    parsed = apply9RouterCodexConfig(parsed, {
+      baseUrl: normalizedBaseUrl,
+      model,
+      subagentModel,
     });
 
     // Write merged config
@@ -184,7 +152,7 @@ export async function DELETE() {
     let parsed = {};
     try {
       const existingConfig = await fs.readFile(configPath, "utf-8");
-      parsed = parsedToWritable(parseTOML(existingConfig));
+      parsed = parseTOML(existingConfig) ?? {};
     } catch (error) {
       if (error.code === "ENOENT") {
         return NextResponse.json({
@@ -195,17 +163,7 @@ export async function DELETE() {
       throw error;
     }
 
-    // Remove 9Router related root fields only if they point to 9router
-    if (parsed.model_provider === "9router") {
-      delete parsed.model;
-      delete parsed.model_provider;
-    }
-
-    // Remove 9router provider section
-    deleteNestedSection(parsed, "model_providers.9router");
-
-    // Remove subagent configuration
-    deleteNestedSection(parsed, "agents.subagent");
+    parsed = reset9RouterCodexConfig(parsed);
 
     // Write updated config
     const configContent = stringifyTOML(parsed);

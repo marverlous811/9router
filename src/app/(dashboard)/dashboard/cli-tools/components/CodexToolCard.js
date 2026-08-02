@@ -6,6 +6,10 @@ import Image from "next/image";
 import BaseUrlSelect from "./BaseUrlSelect";
 import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
+import {
+  buildCodexManualConfig,
+  readCodexConfiguredModels,
+} from "@/lib/codexConfig.js";
 
 export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, apiKeys, activeProviders, cloudEnabled, initialStatus, tunnelEnabled, tunnelPublicUrl, tailscaleEnabled, tailscaleUrl }) {
   const [codexStatus, setCodexStatus] = useState(initialStatus || null);
@@ -50,16 +54,11 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
     }
   };
 
-  // Parse model and subagent settings from config content
   useEffect(() => {
-    if (codexStatus?.config) {
-      const modelMatch = codexStatus.config.match(/^model\s*=\s*"([^"]+)"/m);
-      if (modelMatch) setSelectedModel(modelMatch[1]);
-
-      // Parse subagent settings
-      const subagentModelMatch = codexStatus.config.match(/\[agents\.subagent\]\s*\n\s*model\s*=\s*"([^"]+)"/m);
-      if (subagentModelMatch) setSubagentModel(subagentModelMatch[1]);
-    }
+    if (!codexStatus?.config) return;
+    const configured = readCodexConfiguredModels(codexStatus.config);
+    setSelectedModel(configured.model);
+    setSubagentModel(configured.subagentModel);
   }, [codexStatus]);
 
   const getConfigStatus = () => {
@@ -163,18 +162,11 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
 
     const effectiveSubagentModel = subagentModel || selectedModel;
 
-    const configContent = `# 9Router Configuration for Codex CLI
-model = "${selectedModel}"
-model_provider = "9router"
-
-[model_providers.9router]
-name = "9Router"
-base_url = "${getEffectiveBaseUrl()}"
-wire_api = "responses"
-
-[agents.subagent]
-model = "${effectiveSubagentModel}"
-`;
+    const configContent = buildCodexManualConfig({
+      baseUrl: getEffectiveBaseUrl(),
+      model: selectedModel,
+      subagentModel: effectiveSubagentModel,
+    });
 
     const authContent = JSON.stringify({
       auth_mode: "apikey",

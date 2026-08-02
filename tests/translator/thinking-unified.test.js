@@ -157,6 +157,17 @@ describe("applyThinking per provider format", () => {
     const out = apply("openai", "gpt-5.3-codex", { reasoning_effort: "xhigh" }, "codex");
     expect(out.reasoning_effort).toBe("xhigh");
   });
+  it("responses preserves Codex reasoning context while normalizing standard fields", () => {
+    const out = apply("openai-responses", "gpt-5.6-sol(high)", {
+      reasoning: { effort: "low", context: "all_turns", summary: "detailed" },
+    }, "openai-compatible-responses-test");
+
+    expect(out.reasoning).toEqual({
+      effort: "high",
+      context: "all_turns",
+      summary: "auto",
+    });
+  });
 });
 
 describe("extractReasoningText (response shapes)", () => {

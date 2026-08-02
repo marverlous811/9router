@@ -7,6 +7,8 @@ import { getCachedClaudeHeaders } from "../utils/claudeHeaderCache.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
+import { FORMATS } from "../translator/formats.js";
+import { mergeCodexResponsesHeaders } from "../utils/codexHeaders.js";
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -16,6 +18,13 @@ const AUTH_DESCRIPTORS = Object.fromEntries(
     .filter(([, t]) => t.auth)
     .map(([id, t]) => [id, t.auth])
 );
+
+function usesNativeResponsesTransport(provider, config, credentials) {
+  const runtimeFormat = credentials?.runtimeTransport?.format;
+  if (runtimeFormat) return runtimeFormat === FORMATS.OPENAI_RESPONSES;
+  return config?.format === FORMATS.OPENAI_RESPONSES
+    || (provider?.startsWith?.("openai-compatible-") && provider.includes("responses"));
+}
 
 // Apply a token to a header per scheme (matches legacy: combined always sets, even when undefined).
 function setAuth(headers, spec, token) {
@@ -163,7 +172,10 @@ export class DefaultExecutor extends BaseExecutor {
 
   buildHeaders(credentials, stream = true) {
     const rt = credentials?.runtimeTransport;
-    const headers = { "Content-Type": "application/json", ...(rt ? rt.headers : this.config.headers) };
+    const baseHeaders = { "Content-Type": "application/json", ...(rt ? rt.headers : this.config.headers) };
+    const headers = usesNativeResponsesTransport(this.provider, this.config, credentials)
+      ? mergeCodexResponsesHeaders(baseHeaders, credentials?.rawHeaders)
+      : baseHeaders;
     const desc = rt?.auth || AUTH_DESCRIPTORS[this.provider] || this.resolveAuthDescriptor();
     // Hooks run BEFORE auth so dynamic overlays (claude cached headers) can't clobber the token.
     for (const hook of desc.hooks || []) HEADER_HOOKS[hook]?.(headers, credentials);
