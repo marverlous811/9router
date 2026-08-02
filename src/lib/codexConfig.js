@@ -1,4 +1,4 @@
-import { parseTOML, stringifyTOML } from "confbox";
+import { parseTOML, stringifyTOML } from "confbox/toml";
 
 function cloneConfig(config) {
   return structuredClone(config ?? {});

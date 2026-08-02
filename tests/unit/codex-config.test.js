@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { parseTOML, stringifyTOML } from "confbox";
 import {
   apply9RouterCodexConfig,
@@ -22,6 +23,16 @@ const existingConfig = {
     subagent: { model: "obsolete-model" },
   },
 };
+
+it("keeps the dashboard helper off confbox's Node-only barrel entry", () => {
+  const source = readFileSync(
+    new URL("../../src/lib/codexConfig.js", import.meta.url),
+    "utf8",
+  );
+
+  expect(source).toContain('from "confbox/toml"');
+  expect(source).not.toContain('from "confbox"');
+});
 
 describe("apply9RouterCodexConfig", () => {
   it("writes the current default subagent schema and preserves unrelated config", () => {
