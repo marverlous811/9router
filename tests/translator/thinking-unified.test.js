@@ -18,6 +18,12 @@ describe("parseSuffix", () => {
   it("parses level suffix", () => {
     expect(parseSuffix("gpt-5(high)")).toEqual({ cleanModel: "gpt-5", override: { mode: "level", level: "high" } });
   });
+  it("parses ultra suffix", () => {
+    expect(parseSuffix("gpt-5.6-sol(ultra)")).toEqual({
+      cleanModel: "gpt-5.6-sol",
+      override: { mode: "level", level: "ultra" },
+    });
+  });
   it("parses numeric budget suffix", () => {
     expect(parseSuffix("model(8192)")).toEqual({ cleanModel: "model", override: { mode: "budget", budget: 8192 } });
   });
@@ -167,6 +173,26 @@ describe("applyThinking per provider format", () => {
       context: "all_turns",
       summary: "auto",
     });
+  });
+  it.each([
+    ["gpt-5.6-sol", "max", "max"],
+    ["gpt-5.6-sol", "ultra", "ultra"],
+    ["gpt-5.6-terra", "max", "max"],
+    ["gpt-5.6-terra", "ultra", "ultra"],
+    ["gpt-5.6-luna", "max", "max"],
+    ["gpt-5.6-luna", "ultra", "max"],
+  ])("normalizes Codex %s effort %s to %s", (model, effort, expected) => {
+    const out = apply("openai-responses", model, { reasoning: { effort } }, "codex");
+    expect(out.reasoning).toEqual({ effort: expected, summary: "auto" });
+    expect(out.reasoning_effort).toBeUndefined();
+  });
+  it("applies a supported Codex Ultra suffix", () => {
+    const out = apply("openai-responses", "gpt-5.6-sol(ultra)", {}, "codex");
+    expect(out.reasoning).toEqual({ effort: "ultra", summary: "auto" });
+  });
+  it("keeps Codex-only GPT-5.6 levels out of Kiro translation", () => {
+    const out = apply("openai", "gpt-5.6-sol", { reasoning_effort: "max" }, "kiro");
+    expect(out.reasoning_effort).toBe("xhigh");
   });
 });
 

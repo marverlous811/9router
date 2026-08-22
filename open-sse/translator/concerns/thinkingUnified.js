@@ -3,6 +3,7 @@
 // never hardcoded per-model here. See .docs/thinking/plan.md MATRIX VI-A.
 
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
+import { getThinkingLevels } from "../../providers/thinkingLevels.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { LEVEL_TO_BUDGET, budgetToLevel, effortToBudget, effortToThinkingLevel } from "./thinking.js";
 
@@ -37,6 +38,7 @@ export function parseSuffix(model) {
   const raw = m[2].trim().toLowerCase();
   if (raw === "none" || raw === "off") return { cleanModel, override: { mode: "none" } };
   if (raw === "auto") return { cleanModel, override: { mode: "auto" } };
+  if (raw === "ultra") return { cleanModel, override: { mode: "level", level: raw } };
   if (/^\d+$/.test(raw)) return { cleanModel, override: { mode: "budget", budget: Number(raw) } };
   if (LEVEL_TO_BUDGET[raw] !== undefined) return { cleanModel, override: { mode: "level", level: raw } };
   return { cleanModel, override: null };
@@ -140,6 +142,13 @@ function toLevel(cfg) {
   return null;
 }
 
+function normalizeOpenAILevel(level, supportedLevels) {
+  if (level !== "max" && level !== "ultra") return level;
+  if (supportedLevels?.includes(level)) return level;
+  if (level === "ultra" && supportedLevels?.includes("max")) return "max";
+  return "xhigh";
+}
+
 function toGeminiThinkingLevel(cfg) {
   const raw = cfg.mode === "auto" ? "high" : (toLevel(cfg) || "high");
   return effortToThinkingLevel(raw);
@@ -219,7 +228,7 @@ function stripAll(body) {
 }
 
 // Apply unified thinking config to body in the resolved provider-native format.
-function applyFormat(fmt, body, cfg, caps) {
+function applyFormat(fmt, body, cfg, caps, supportedLevels) {
   const none = cfg.mode === "none";
   const canDisable = caps.thinkingCanDisable !== false;
   // Model cannot disable thinking → clamp "none" to minimal effort instead.
@@ -229,8 +238,7 @@ function applyFormat(fmt, body, cfg, caps) {
     case "openai": {
       if (none && canDisable) { body.reasoning_effort = "none"; break; }
       const level = toLevel(eff);
-      // OpenAI reasoning_effort enum caps at "xhigh" (no "max"); clamp Claude Code's "max".
-      if (level) body.reasoning_effort = level === "max" ? "xhigh" : level;
+      if (level) body.reasoning_effort = normalizeOpenAILevel(level, supportedLevels);
       break;
     }
     case "openai-responses": {
@@ -238,7 +246,7 @@ function applyFormat(fmt, body, cfg, caps) {
       // Completions' flat `reasoning_effort` — sending the flat field 400s upstream.
       if (none && canDisable) { body.reasoning = { effort: "none", summary: "auto" }; break; }
       const level = toLevel(eff);
-      if (level) body.reasoning = { effort: level === "max" ? "xhigh" : level, summary: "auto" };
+      if (level) body.reasoning = { effort: normalizeOpenAILevel(level, supportedLevels), summary: "auto" };
       break;
     }
     case "claude-adaptive": {
@@ -316,6 +324,15 @@ function applyFormat(fmt, body, cfg, caps) {
       if (level) body.reasoning_effort = level === "xhigh" || level === "max" ? "high" : level;
       break;
     }
+    case "tokenrouter": {
+      // TokenRouter's reasoning_effort enum is low/medium/high/xhigh/max — it rejects
+      // "none"/"auto" with a 400 and supports "max" natively (no clamp like openai).
+      // "none" → omit the field so the upstream default applies; pass levels through.
+      if (none || eff.mode === "auto") break;
+      const level = toLevel(eff);
+      if (level) body.reasoning_effort = level;
+      break;
+    }
     case "kiro":
       // Kiro thinking handled via system-tag injection in openai-to-kiro.js; no body field here.
       break;
@@ -352,7 +369,8 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
     ? { ...body.reasoning }
     : null;
   stripAll(body);
-  applyFormat(fmt, body, cfg, caps);
+  const supportedLevels = getThinkingLevels(provider, cleanModel);
+  applyFormat(fmt, body, cfg, caps, supportedLevels);
   if (responsesReasoning) {
     body.reasoning = { ...responsesReasoning, ...body.reasoning };
   }
