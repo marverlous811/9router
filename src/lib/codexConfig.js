@@ -20,6 +20,7 @@ export function apply9RouterCodexConfig(config, { baseUrl, model, subagentModel 
     ...(next.model_providers["9router"] ?? {}),
     name: "9Router",
     base_url: baseUrl,
+    env_key: "OPENAI_API_KEY",
     wire_api: "responses",
   };
   next.agents = { ...(next.agents ?? {}) };

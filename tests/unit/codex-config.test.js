@@ -52,6 +52,7 @@ describe("apply9RouterCodexConfig", () => {
         "9router": {
           name: "9Router",
           base_url: "http://localhost:20128/v1",
+          env_key: "OPENAI_API_KEY",
           wire_api: "responses",
           request_max_retries: 7,
         },
@@ -141,6 +142,7 @@ default_subagent_model = "lumi/gpt-5.6-terra"
     });
 
     expect(preview).toContain("[agents]");
+    expect(preview).toContain('env_key = "OPENAI_API_KEY"');
     expect(preview).toContain('default_subagent_model = "lumi/gpt-5.6-terra"');
     expect(preview).not.toContain("[agents.subagent]");
   });
