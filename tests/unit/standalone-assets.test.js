@@ -48,6 +48,44 @@ describe("standalone build assets", () => {
       .toBe("wrapper");
   });
 
+  it("copies dynamically loaded Codex WebSocket assets and external modules", () => {
+    const projectRoot = createBuildFixture(".next");
+    writeFileSync(join(projectRoot, "codex-websocket-loader.mjs"), "loader");
+    mkdirSync(join(projectRoot, "src", "sse", "services"), { recursive: true });
+    mkdirSync(join(projectRoot, "open-sse", "utils"), { recursive: true });
+    writeFileSync(join(projectRoot, "src", "sse", "services", "codexWebSocket.js"), "relay");
+    writeFileSync(join(projectRoot, "open-sse", "utils", "codexHeaders.js"), "headers");
+    for (const [moduleName, dependencies] of [
+      ["confbox", {}],
+      ["https-proxy-agent", { "agent-base": "*" }],
+      ["jose", {}],
+      ["node-machine-id", {}],
+      ["socks-proxy-agent", { "agent-base": "*", socks: "*" }],
+      ["undici", {}],
+      ["uuid", {}],
+      ["ws", {}],
+      ["agent-base", { debug: "*" }],
+      ["debug", {}],
+      ["socks", {}],
+    ]) {
+      mkdirSync(join(projectRoot, "node_modules", moduleName), { recursive: true });
+      writeFileSync(
+        join(projectRoot, "node_modules", moduleName, "package.json"),
+        JSON.stringify({ name: moduleName, dependencies }),
+      );
+    }
+
+    copyStandaloneAssets({ projectRoot, distDir: ".next" });
+
+    const standalone = join(projectRoot, ".next", "standalone");
+    expect(readFileSync(join(standalone, "codex-websocket-loader.mjs"), "utf8")).toBe("loader");
+    expect(readFileSync(join(standalone, "src", "sse", "services", "codexWebSocket.js"), "utf8")).toBe("relay");
+    expect(readFileSync(join(standalone, "open-sse", "utils", "codexHeaders.js"), "utf8")).toBe("headers");
+    for (const moduleName of ["confbox", "https-proxy-agent", "jose", "node-machine-id", "socks-proxy-agent", "undici", "uuid", "ws", "agent-base", "debug", "socks"]) {
+      expect(JSON.parse(readFileSync(join(standalone, "node_modules", moduleName, "package.json"), "utf8")).name).toBe(moduleName);
+    }
+  });
+
   it("does not modify workspace-traced CLI builds", () => {
     const projectRoot = createBuildFixture(".next-cli-build");
     const previousMode = process.env.NEXT_TRACING_ROOT_MODE;

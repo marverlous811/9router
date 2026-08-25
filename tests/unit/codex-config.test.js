@@ -54,6 +54,7 @@ describe("apply9RouterCodexConfig", () => {
           base_url: "http://localhost:20128/v1",
           env_key: "OPENAI_API_KEY",
           wire_api: "responses",
+          supports_websockets: true,
           request_max_retries: 7,
         },
       },
@@ -143,6 +144,7 @@ default_subagent_model = "lumi/gpt-5.6-terra"
 
     expect(preview).toContain("[agents]");
     expect(preview).toContain('env_key = "OPENAI_API_KEY"');
+    expect(preview).toContain("supports_websockets = true");
     expect(preview).toContain('default_subagent_model = "lumi/gpt-5.6-terra"');
     expect(preview).not.toContain("[agents.subagent]");
   });

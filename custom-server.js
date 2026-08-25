@@ -3,8 +3,67 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { pathToFileURL } = require("url");
+const { register: registerModuleLoader } = require("module");
 
 const origCreate = http.createServer.bind(http);
+let codexWebSocketUpgrade;
+let codexWebSocketLoaderRegistered = false;
+
+function isCodexResponsesWebSocketPath(url) {
+  try {
+    const pathname = new URL(url, "http://localhost").pathname;
+    return pathname === "/v1/responses" || pathname === "/v1/responses/";
+  } catch {
+    return false;
+  }
+}
+
+function loadCodexWebSocketUpgrade() {
+  if (codexWebSocketUpgrade) return codexWebSocketUpgrade;
+
+  if (!codexWebSocketLoaderRegistered) {
+    if (typeof registerModuleLoader !== "function") {
+      throw new Error("Native Responses WebSocket transport requires Node.js 20.6 or newer");
+    }
+    const projectRoot = pathToFileURL(`${__dirname}${path.sep}`).href;
+    const loaderPath = pathToFileURL(path.join(__dirname, "codex-websocket-loader.mjs")).href;
+    registerModuleLoader(loaderPath, pathToFileURL(__filename), { data: { projectRoot } });
+    codexWebSocketLoaderRegistered = true;
+  }
+
+  const modulePath = path.join(__dirname, "src", "sse", "services", "codexWebSocket.js");
+  codexWebSocketUpgrade = import(pathToFileURL(modulePath).href)
+    .then(({ handleCodexResponsesWebSocketUpgrade }) => handleCodexResponsesWebSocketUpgrade);
+  return codexWebSocketUpgrade;
+}
+
+function handleCodexWebSocketUpgrade(req, socket, head) {
+  loadCodexWebSocketUpgrade()
+    .then((upgrade) => upgrade(req, socket, head))
+    .catch((error) => {
+      console.error("[CODEX-WS] Failed to initialize WebSocket relay:", error?.message || error);
+      socket.destroy();
+    });
+}
+
+function stampPeerHeaders(req) {
+  const socketIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
+  const xff = req.headers["x-forwarded-for"];
+  const xRealIp = req.headers["x-real-ip"];
+  const viaProxy = !!(xff || xRealIp);
+  const isLoopbackProxy = socketIp === "127.0.0.1" || socketIp === "::1" || socketIp === "::ffff:127.0.0.1";
+  // Trust forwarding headers only when the TCP peer is a local reverse proxy.
+  // Direct/public sockets remain keyed by the unspoofable peer address.
+  const proxyIp = xRealIp || (xff ? String(xff).split(",")[0].trim() : "");
+  const ip = isLoopbackProxy && proxyIp ? proxyIp : socketIp;
+  delete req.headers["x-9r-real-ip"];
+  delete req.headers["x-forwarded-for"];
+  delete req.headers["x-9r-via-proxy"];
+  delete req.headers["x-9r-peer-token"];
+  req.headers["x-9r-real-ip"] = ip;
+  req.headers["x-9r-peer-token"] = PEER_TOKEN;
+  if (viaProxy) req.headers["x-9r-via-proxy"] = "1";
+}
 
 // Per-process secret proving x-9r-real-ip was stamped below rather than sent by the client.
 // A bare `next start` / `next dev` never loads this file, so it cannot produce a matching
@@ -54,22 +113,7 @@ http.createServer = (...args) => {
   const rest = args.filter((a) => typeof a !== "function");
   if (!handler) return origCreate(...args);
   const wrapped = (req, res) => {
-    const socketIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
-    const xff = req.headers["x-forwarded-for"];
-    const xRealIp = req.headers["x-real-ip"];
-    const viaProxy = !!(xff || xRealIp);
-    const isLoopbackProxy = socketIp === "127.0.0.1" || socketIp === "::1" || socketIp === "::ffff:127.0.0.1";
-    // Trust forwarding headers only when the TCP peer is a local reverse proxy.
-    // Direct/public sockets remain keyed by the unspoofable peer address.
-    const proxyIp = xRealIp || (xff ? String(xff).split(",")[0].trim() : "");
-    const ip = isLoopbackProxy && proxyIp ? proxyIp : socketIp;
-    delete req.headers["x-9r-real-ip"];
-    delete req.headers["x-forwarded-for"];
-    delete req.headers["x-9r-via-proxy"];
-    delete req.headers["x-9r-peer-token"];
-    req.headers["x-9r-real-ip"] = ip;
-    req.headers["x-9r-peer-token"] = PEER_TOKEN;
-    if (viaProxy) req.headers["x-9r-via-proxy"] = "1";
+    stampPeerHeaders(req);
     return handler(req, res);
   };
   const server = origCreate(...rest, wrapped);
@@ -80,9 +124,16 @@ http.createServer = (...args) => {
   // JBR 25 sends h2c upgrades that the HTTP/1.1 server would otherwise close.
   server.emit = function (event, ...eventArgs) {
     const [req, socket, head] = eventArgs;
-    if (event !== "upgrade" || String(req.headers.upgrade || "").toLowerCase() !== "h2c") {
-      return origEmit.call(this, event, ...eventArgs);
+    if (event !== "upgrade") return origEmit.call(this, event, ...eventArgs);
+
+    const upgrade = String(req.headers.upgrade || "").toLowerCase();
+    if (upgrade === "websocket") {
+      if (!isCodexResponsesWebSocketPath(req.url)) return origEmit.call(this, event, ...eventArgs);
+      stampPeerHeaders(req);
+      handleCodexWebSocketUpgrade(req, socket, head);
+      return true;
     }
+    if (upgrade !== "h2c") return origEmit.call(this, event, ...eventArgs);
 
     const contentLength = Number(req.headers["content-length"] || 0);
     if (!Number.isSafeInteger(contentLength) || contentLength < 0) {

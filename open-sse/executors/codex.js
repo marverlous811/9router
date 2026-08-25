@@ -210,8 +210,8 @@ export class CodexExecutor extends BaseExecutor {
     // but fall back to chatgptAccountId so requests don't cross-bind to the wrong
     // OpenAI account and surface as token_invalid after adding another account.
     const accountId =
-      credentials?.providerSpecificData?.workspaceId ||
       credentials?.providerSpecificData?.chatgptAccountId ||
+      credentials?.providerSpecificData?.workspaceId ||
       credentials?.providerSpecificData?.accountId;
     if (typeof accountId === "string" && accountId && !headers["ChatGPT-Account-ID"]) {
       headers["ChatGPT-Account-ID"] = accountId;

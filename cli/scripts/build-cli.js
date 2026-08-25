@@ -221,35 +221,78 @@ function buildCliPackage() {
     process.exit(1);
   }
 
-  // Step 3b: Ensure sql.js (pure JS fallback) bundled in app/cli/app/node_modules.
-  // Strip better-sqlite3 (native) — it lives in ~/.9router/runtime to avoid
-  // Windows EBUSY during global CLI updates. node:sqlite (Node ≥22.5) is also
-  // available as a no-install middle tier.
-  console.log("3️⃣ b Configuring SQLite drivers...");
-  function ensureModuleInBundle(pkg) {
-    const dest = path.join(cliAppDir, "node_modules", pkg);
-    if (fs.existsSync(dest)) {
-      console.log(`✅ ${pkg} already bundled`);
-      return;
+  // Step 3b: Copy source-loaded native Codex Responses WebSocket assets. They are
+  // loaded by custom-server.js at runtime, so Next output tracing cannot discover them.
+  const nativeCodexWsAssets = [
+    "codex-websocket-loader.mjs",
+    "src",
+    "open-sse",
+  ];
+  for (const asset of nativeCodexWsAssets) {
+    const source = path.join(appDir, asset);
+    if (!fs.existsSync(source)) {
+      console.error(`❌ Native Codex WebSocket asset not found: ${asset}`);
+      process.exit(1);
     }
-    const candidates = [
+    const destination = path.join(cliAppDir, asset);
+    if (fs.statSync(source).isDirectory()) {
+      copyRecursive(source, destination);
+    } else {
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(source, destination);
+    }
+    console.log(`✅ Copied ${asset}`);
+  }
+  console.log("");
+
+  // Step 3c: Ensure source-loaded runtime dependencies are present in the CLI bundle.
+  console.log("3️⃣ c Configuring SQLite and WebSocket drivers...");
+  function findInstalledModule(pkg) {
+    return [
       path.join(appDir, "node_modules", pkg),
       path.join(rootDir, "node_modules", pkg),
-    ];
-    const src = candidates.find((p) => fs.existsSync(p));
+    ].find((candidate) => fs.existsSync(candidate));
+  }
+  function ensureModuleInBundle(pkg, copied = new Set()) {
+    if (copied.has(pkg)) return;
+    copied.add(pkg);
+
+    const dest = path.join(cliAppDir, "node_modules", pkg);
+    const src = findInstalledModule(pkg);
     if (!src) {
       console.warn(`⚠️  ${pkg} not found locally — bundle will rely on node:sqlite or runtime install`);
       return;
     }
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    copyRecursive(src, dest);
-    console.log(`✅ Bundled ${pkg}`);
+    if (!fs.existsSync(dest)) {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      copyRecursive(src, dest);
+      console.log(`✅ Bundled ${pkg}`);
+    } else {
+      console.log(`✅ ${pkg} already bundled`);
+    }
+
+    const manifestPath = path.join(src, "package.json");
+    if (!fs.existsSync(manifestPath)) return;
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    for (const dependencyName of Object.keys(manifest.dependencies || {})) {
+      ensureModuleInBundle(dependencyName, copied);
+    }
   }
-  ensureModuleInBundle("sql.js");
-  // `open` is external (see serverExternalPackages in next.config.mjs), so it must exist in
-  // the bundle's node_modules or every importer throws MODULE_NOT_FOUND at runtime. Output
-  // tracing normally copies it; this is the same belt-and-braces guard used for sql.js.
-  ensureModuleInBundle("open");
+  const copiedModules = new Set();
+  for (const packageName of [
+    "confbox",
+    "https-proxy-agent",
+    "jose",
+    "node-machine-id",
+    "open",
+    "socks-proxy-agent",
+    "sql.js",
+    "undici",
+    "uuid",
+    "ws",
+  ]) {
+    ensureModuleInBundle(packageName, copiedModules);
+  }
   const betterDir = path.join(cliAppDir, "node_modules", "better-sqlite3");
   if (fs.existsSync(betterDir)) {
     fs.rmSync(betterDir, { recursive: true, force: true });

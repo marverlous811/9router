@@ -1145,6 +1145,21 @@ Edit `~/.claude/config.json`:
 
 ### Codex CLI
 
+Use **Dashboard → CLI Tools → Codex → Apply** to write the recommended provider entry to `~/.codex/config.toml`. It enables Codex's native Responses WebSocket transport:
+
+```toml
+[model_providers.9router]
+base_url = "http://localhost:20128/v1"
+wire_api = "responses"
+supports_websockets = true
+```
+
+The selected 9Router model must resolve to an **OpenAI-compatible Responses** connection whose upstream implements the native Responses WebSocket protocol (for example, codex-lb v1.24.0-beta.4 or newer). Other providers keep using the existing HTTP/SSE Responses route; a WebSocket request to one is rejected rather than silently switching transports. WebSocket sessions pin one selected account, so model combos and mid-session account fallback are not supported.
+
+If 9Router is behind a reverse proxy or load balancer, allow HTTP `Upgrade`, WebSocket headers, and long-lived connections on `/v1/responses`.
+
+For an environment-only setup, Codex can still use the HTTP/SSE path:
+
 ```bash
 export OPENAI_BASE_URL="http://localhost:20128"
 export OPENAI_API_KEY="your-9router-api-key"

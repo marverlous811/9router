@@ -20,7 +20,12 @@ const nextConfig = {
   // letter). That throw happens at module scope, so every consumer of `open` dies on
   // import — including xAI/Grok token refresh, which loads the OAuth service that imports
   // it. Keeping it external preserves the real `import.meta.url` at runtime.
-  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "open"],
+  serverExternalPackages: [
+    "better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "open",
+    // custom-server dynamically imports the native Codex Responses WebSocket relay.
+    // Keep its runtime modules external so output tracing can place their dependencies intact.
+    "ws", "https-proxy-agent", "socks-proxy-agent",
+  ],
   turbopack: {
     root: tracingRoot
   },

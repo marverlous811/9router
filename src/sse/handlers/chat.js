@@ -19,9 +19,16 @@ import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActi
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
+import { resolveOpenAICompatibleApiType } from "open-sse/services/provider.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import {
+  clearCodexTurnAffinity,
+  getCodexTurnAffinity,
+  isCodexTurnStateOwnerUnavailable,
+  setCodexTurnAffinity,
+} from "../services/codexTurnAffinity.js";
 
 /**
  * Handle chat completion request
@@ -219,13 +226,33 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
 
+  // Codex Responses turn state is bound to one upstream account. Keep that
+  // account across the HTTPS fallback rather than rotating a logical turn.
+  const turnState = clientRawRequest?.headers?.["x-codex-turn-state"];
+  const isCodexResponses = provider?.startsWith("openai-compatible-")
+    && resolveOpenAICompatibleApiType(provider) === "responses";
+  const turnAffinity = isCodexResponses
+    ? getCodexTurnAffinity({ turnState, apiKey, provider, model })
+    : null;
+
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model,
+      turnAffinity ? {
+        preferredConnectionId: turnAffinity.connectionId,
+        strictPreferredConnection: true,
+      } : undefined);
+    if (credentials?.preferredConnectionUnavailable) {
+      clearCodexTurnAffinity({ turnState, apiKey });
+      return errorResponse(HTTP_STATUS.CONFLICT || 409, "Turn-state owner account is unavailable; retry the logical turn.");
+    }
+    if (isCodexResponses && turnState && credentials?.connectionId) {
+      setCodexTurnAffinity({ turnState, apiKey, provider, model, connectionId: credentials.connectionId });
+    }
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -299,6 +326,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     });
 
     if (result.success) return result.response;
+
+    if (isCodexResponses && isCodexTurnStateOwnerUnavailable(result.error)) {
+      clearCodexTurnAffinity({ turnState, apiKey });
+      return result.response;
+    }
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs);

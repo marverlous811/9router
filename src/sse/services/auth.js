@@ -93,6 +93,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
     });
 
+    if (options?.strictPreferredConnection && preferredConnectionId
+      && !availableConnections.some(c => c.id === preferredConnectionId)) {
+      log.warn("AUTH", `${provider} | required pinned account is unavailable`);
+      return { preferredConnectionUnavailable: true, connectionId: preferredConnectionId };
+    }
+
     if (availableConnections.length === 0) {
       // Find earliest lock expiry across all connections for retry timing
       const lockedConns = connections.filter(c => isModelLockActive(c, model));
