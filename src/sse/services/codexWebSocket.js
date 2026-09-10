@@ -4,6 +4,9 @@ import { WebSocketServer, WebSocket } from "ws";
 import { selectCodexResponsesHeaders } from "open-sse/utils/codexHeaders.js";
 import { resolveOpenAICompatibleApiType } from "open-sse/services/provider.js";
 import { getSettings, validateApiKey } from "@/lib/db/index.js";
+import { trackPendingRequest } from "@/lib/usageDb.js";
+import { saveUsageStats } from "open-sse/handlers/chatCore/requestDetail.js";
+import { extractUsage } from "open-sse/utils/usageTracking.js";
 import { getProviderCredentials, markAccountUnavailable, clearAccountError } from "./auth.js";
 import { getModelInfo } from "./model.js";
 import { checkAndRefreshToken } from "./tokenRefresh.js";
@@ -25,6 +28,7 @@ const MAX_PAYLOAD_BYTES = 32 * 1024 * 1024;
 const UPSTREAM_CONNECT_TIMEOUT_MS = 60_000;
 const UPSTREAM_IDLE_TIMEOUT_MS = 10 * 60_000;
 const DOWNSTREAM_ERROR_TYPE = "error";
+const MAX_FINALIZED_RESPONSE_IDS = 1_000;
 
 let server;
 
@@ -325,11 +329,14 @@ class ResponsesWebSocketRelay {
     this.upstream = null;
     this.connection = null;
     this.closing = false;
-    this.completed = false;
+    this.pendingResponses = [];
+    this.responsesById = new Map();
+    this.finalizedResponseIds = new Set();
     this.chain = Promise.resolve();
     this.idleTimer = null;
     this.upstreamErrorForwarded = false;
     this.accountFailureMarked = false;
+    this.endpoint = new URL(request.url, "http://localhost").pathname;
   }
 
   start() {
@@ -340,6 +347,78 @@ class ResponsesWebSocketRelay {
     });
     this.client.on("close", () => this.closeUpstream());
     this.client.on("error", () => this.closeUpstream());
+  }
+
+  startResponse() {
+    const response = { id: null, finalized: false };
+    this.pendingResponses.push(response);
+    trackPendingRequest(
+      this.connection.model,
+      this.connection.provider,
+      this.connection.credentials.connectionId,
+      true,
+    );
+    return response;
+  }
+
+  bindResponse(id) {
+    if (!id || this.responsesById.has(id)) return this.responsesById.get(id) || null;
+    const response = this.pendingResponses.find(item => !item.id && !item.finalized);
+    if (!response) return null;
+    response.id = id;
+    this.responsesById.set(id, response);
+    return response;
+  }
+
+  findResponse(event) {
+    const id = event?.response?.id;
+    if (id && this.responsesById.has(id)) return this.responsesById.get(id);
+    if (id && this.finalizedResponseIds.has(id)) return null;
+    if (id) return this.bindResponse(id);
+    return this.pendingResponses.find(item => !item.finalized) || null;
+  }
+
+  finalizeResponse(response, { error = false, usage = null } = {}) {
+    if (!response || response.finalized) return false;
+    response.finalized = true;
+    this.pendingResponses = this.pendingResponses.filter(item => item !== response);
+    if (response.id) {
+      this.responsesById.delete(response.id);
+      this.finalizedResponseIds.add(response.id);
+      if (this.finalizedResponseIds.size > MAX_FINALIZED_RESPONSE_IDS) {
+        this.finalizedResponseIds.delete(this.finalizedResponseIds.values().next().value);
+      }
+    }
+
+    trackPendingRequest(
+      this.connection.model,
+      this.connection.provider,
+      this.connection.credentials.connectionId,
+      false,
+      error,
+    );
+    if (usage) {
+      saveUsageStats({
+        provider: this.connection.provider,
+        model: this.connection.model,
+        tokens: usage,
+        connectionId: this.connection.credentials.connectionId,
+        apiKey: this.apiKey,
+        endpoint: this.endpoint,
+        silent: true,
+      });
+    }
+    return true;
+  }
+
+  finalizePendingResponses(error = false) {
+    for (const response of [...this.pendingResponses]) {
+      this.finalizeResponse(response, { error });
+    }
+  }
+
+  hasPendingResponses() {
+    return this.pendingResponses.some(response => !response.finalized);
   }
 
   refreshIdleTimer() {
@@ -366,8 +445,8 @@ class ResponsesWebSocketRelay {
       }
     }
 
-    this.completed = false;
     this.upstream.send(JSON.stringify(rewriteModel(payload, this.connection.model)));
+    this.startResponse();
     this.refreshIdleTimer();
   }
 
@@ -427,6 +506,7 @@ class ResponsesWebSocketRelay {
             "turn_state_owner_unavailable",
             "invalid_request_error",
           );
+          this.finalizePendingResponses(true);
           this.closing = true;
           clearTimeout(this.idleTimer);
           if (this.upstream.readyState < WebSocket.CLOSING) {
@@ -435,8 +515,11 @@ class ResponsesWebSocketRelay {
           this.client.close(1008, "Turn-state owner unavailable");
           return;
         }
-        if (event?.type === "response.completed") {
-          this.completed = true;
+        if (event?.type === "response.created") {
+          this.bindResponse(event.response?.id);
+        } else if (event?.type === "response.completed" || event?.type === "response.done") {
+          const response = this.findResponse(event);
+          this.finalizeResponse(response, { usage: extractUsage(event) });
           setCodexTurnAffinity({
             turnState: this.request.headers["x-codex-turn-state"],
             apiKey: this.apiKey,
@@ -445,6 +528,8 @@ class ResponsesWebSocketRelay {
             connectionId: this.connection.credentials.connectionId,
           });
           clearAccountError(this.connection.credentials.connectionId, this.connection.credentials, this.connection.model).catch(() => {});
+        } else if (["response.failed", "response.incomplete", "response.cancelled"].includes(event?.type)) {
+          this.finalizeResponse(this.findResponse(event), { error: true });
         }
       } catch {
         // Preserve the upstream frame verbatim; Codex will diagnose invalid protocol data.
@@ -460,13 +545,16 @@ class ResponsesWebSocketRelay {
     this.upstream.on("close", (code, reason) => {
       if (this.closing || this.client.readyState !== WebSocket.OPEN) return;
 
-      if (!this.completed && code !== 1000) {
-        const error = Object.assign(
-          new Error(`Upstream WebSocket closed (${code})`),
-          { status: 502 },
-        );
-        this.fail(error);
-        return;
+      if (this.hasPendingResponses()) {
+        if (code !== 1000) {
+          const error = Object.assign(
+            new Error(`Upstream WebSocket closed (${code})`),
+            { status: 502 },
+          );
+          this.fail(error);
+          return;
+        }
+        this.finalizePendingResponses(true);
       }
 
       this.client.close(toClientCloseCode(code), reason.toString().slice(0, 123));
@@ -493,6 +581,7 @@ class ResponsesWebSocketRelay {
         ownerUnavailable ? "invalid_request_error" : error.type || "server_error",
       );
     }
+    this.finalizePendingResponses(true);
     if (this.connection && status >= 500 && !ownerUnavailable && !this.accountFailureMarked) {
       await markAccountUnavailable(this.connection.credentials.connectionId, status, firstErrorMessage(error), this.connection.provider, this.connection.model);
       this.accountFailureMarked = true;
@@ -503,6 +592,7 @@ class ResponsesWebSocketRelay {
   closeUpstream() {
     if (this.closing) return;
     this.closing = true;
+    this.finalizePendingResponses();
     clearTimeout(this.idleTimer);
     if (this.upstream && this.upstream.readyState < WebSocket.CLOSING) this.upstream.close(1000, "Downstream connection closed");
   }

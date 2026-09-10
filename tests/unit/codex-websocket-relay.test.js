@@ -12,11 +12,21 @@ const mocks = vi.hoisted(() => ({
   validateApiKey: vi.fn(),
   markAccountUnavailable: vi.fn(),
   clearAccountError: vi.fn(),
+  trackPendingRequest: vi.fn(),
+  saveUsageStats: vi.fn(),
 }));
 
 vi.mock("@/lib/db/index.js", () => ({
   getSettings: vi.fn(async () => mocks.settings),
   validateApiKey: mocks.validateApiKey,
+}));
+
+vi.mock("@/lib/usageDb.js", () => ({
+  trackPendingRequest: mocks.trackPendingRequest,
+}));
+
+vi.mock("../../open-sse/handlers/chatCore/requestDetail.js", () => ({
+  saveUsageStats: mocks.saveUsageStats,
 }));
 
 vi.mock("../../src/sse/services/auth.js", () => ({
@@ -112,6 +122,8 @@ beforeEach(async () => {
   mocks.validateApiKey.mockReset().mockResolvedValue(false);
   mocks.markAccountUnavailable.mockReset().mockResolvedValue({ shouldFallback: true });
   mocks.clearAccountError.mockReset().mockResolvedValue();
+  mocks.trackPendingRequest.mockReset();
+  mocks.saveUsageStats.mockReset();
   turnAffinityTest.clear();
 
   upstream = new WebSocketServer({ host: "127.0.0.1", port: 0, perMessageDeflate: false });
@@ -235,6 +247,82 @@ describe("Codex Responses WebSocket relay", () => {
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
   });
 
+  it("records terminal Responses usage once and clears the pending request", async () => {
+    const { client, opened } = connectClient(gatewayUrl(), {
+      headers: { Authorization: "Bearer router-client-key" },
+    });
+    await opened;
+
+    const connectedUpstream = once(upstream, "connection");
+    client.send(JSON.stringify({ type: "response.create", response: { model: "mock/gpt-test" } }));
+    const [upstreamClient] = await connectedUpstream;
+    await waitForMessage(upstreamClient);
+
+    upstreamClient.send(JSON.stringify({ type: "response.created", response: { id: "resp_usage" } }));
+    await waitForMessage(client, text => JSON.parse(text).type === "response.created");
+    upstreamClient.send(JSON.stringify({
+      type: "response.completed",
+      response: {
+        id: "resp_usage",
+        usage: {
+          input_tokens: 120,
+          output_tokens: 30,
+          input_tokens_details: { cached_tokens: 20 },
+          output_tokens_details: { reasoning_tokens: 7 },
+        },
+      },
+    }));
+    await waitForMessage(client, text => JSON.parse(text).type === "response.completed");
+
+    expect(mocks.saveUsageStats).toHaveBeenCalledWith({
+      provider,
+      model: "gpt-test",
+      tokens: expect.objectContaining({
+        prompt_tokens: 120,
+        completion_tokens: 30,
+        cached_tokens: 20,
+        reasoning_tokens: 7,
+      }),
+      connectionId: "connection-test",
+      apiKey: "router-client-key",
+      endpoint: "/v1/responses",
+      silent: true,
+    });
+    expect(mocks.trackPendingRequest).toHaveBeenNthCalledWith(1, "gpt-test", provider, "connection-test", true);
+    expect(mocks.trackPendingRequest).toHaveBeenNthCalledWith(2, "gpt-test", provider, "connection-test", false, false);
+
+    upstreamClient.send(JSON.stringify({
+      type: "response.completed",
+      response: { id: "resp_usage", usage: { input_tokens: 120, output_tokens: 30 } },
+    }));
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(mocks.saveUsageStats).toHaveBeenCalledTimes(1);
+  });
+
+  it("accounts independently for multiple Responses on one WebSocket", async () => {
+    const { client, opened } = connectClient(gatewayUrl());
+    await opened;
+
+    const connectedUpstream = once(upstream, "connection");
+    client.send(JSON.stringify({ type: "response.create", response: { model: "mock/gpt-test" } }));
+    const [upstreamClient] = await connectedUpstream;
+    await waitForMessage(upstreamClient);
+    client.send(JSON.stringify({ type: "response.create", response: { model: "mock/gpt-test" } }));
+    await waitForMessage(upstreamClient);
+
+    upstreamClient.send(JSON.stringify({ type: "response.created", response: { id: "resp_first" } }));
+    await waitForMessage(client, text => JSON.parse(text).response?.id === "resp_first");
+    upstreamClient.send(JSON.stringify({ type: "response.created", response: { id: "resp_second" } }));
+    await waitForMessage(client, text => JSON.parse(text).response?.id === "resp_second");
+    upstreamClient.send(JSON.stringify({ type: "response.completed", response: { id: "resp_second", usage: { input_tokens: 20, output_tokens: 2 } } }));
+    await waitForMessage(client, text => JSON.parse(text).response?.id === "resp_second" && JSON.parse(text).type === "response.completed");
+    upstreamClient.send(JSON.stringify({ type: "response.completed", response: { id: "resp_first", usage: { input_tokens: 10, output_tokens: 1 } } }));
+    await waitForMessage(client, text => JSON.parse(text).response?.id === "resp_first" && JSON.parse(text).type === "response.completed");
+
+    expect(mocks.saveUsageStats).toHaveBeenCalledTimes(2);
+    expect(mocks.trackPendingRequest).toHaveBeenCalledTimes(4);
+  });
+
   it("keeps a turn state on its original account across reconnects", async () => {
     const turnState = "turn-account-a";
     const first = connectClient(gatewayUrl(), { headers: { "x-codex-turn-state": turnState } });
@@ -315,6 +403,9 @@ describe("Codex Responses WebSocket relay", () => {
       provider,
       "gpt-test",
     ));
+    expect(mocks.saveUsageStats).not.toHaveBeenCalled();
+    expect(mocks.trackPendingRequest).toHaveBeenNthCalledWith(1, "gpt-test", provider, "connection-test", true);
+    expect(mocks.trackPendingRequest).toHaveBeenNthCalledWith(2, "gpt-test", provider, "connection-test", false, true);
     await closeSocket(client);
   });
 });
