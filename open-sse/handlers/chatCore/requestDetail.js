@@ -4,7 +4,7 @@ import { canonicalizeUsage } from "../../utils/usageTracking.js";
 
 const OPTIONAL_PARAMS = [
   "temperature", "top_p", "top_k",
-  "max_tokens", "max_completion_tokens",
+  "max_tokens", "max_completion_tokens", "max_output_tokens",
   "thinking", "reasoning", "enable_thinking",
   "presence_penalty", "frequency_penalty",
   "seed", "stop", "tools", "tool_choice",
@@ -28,10 +28,16 @@ export function extractUsageFromResponse(responseBody) {
   if (!responseBody || typeof responseBody !== "object") return null;
 
   // Claude format
+  // Note: OpenAI Responses usage ({input_tokens, input_tokens_details:{cached_tokens}})
+  // also matches this branch. Its prompt is cache-INCLUSIVE and its cache rides in
+  // input_tokens_details, so emit it as cached_tokens — the convention
+  // canonicalizeUsage() passes through without folding. Reading it here keeps
+  // cache accounting correct for /v1/responses and codex traffic.
   if (responseBody.usage?.input_tokens !== undefined) {
     return {
       prompt_tokens: responseBody.usage.input_tokens || 0,
       completion_tokens: responseBody.usage.output_tokens || 0,
+      cached_tokens: responseBody.usage.cached_tokens ?? responseBody.usage.input_tokens_details?.cached_tokens,
       cache_read_input_tokens: responseBody.usage.cache_read_input_tokens,
       cache_creation_input_tokens: responseBody.usage.cache_creation_input_tokens
     };
@@ -42,7 +48,7 @@ export function extractUsageFromResponse(responseBody) {
     return {
       prompt_tokens: responseBody.usage.prompt_tokens || 0,
       completion_tokens: responseBody.usage.completion_tokens || 0,
-      cached_tokens: responseBody.usage.prompt_tokens_details?.cached_tokens,
+      cached_tokens: responseBody.usage.cached_tokens ?? responseBody.usage.prompt_tokens_details?.cached_tokens,
       reasoning_tokens: responseBody.usage.completion_tokens_details?.reasoning_tokens
     };
   }

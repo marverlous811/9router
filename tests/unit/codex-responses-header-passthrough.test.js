@@ -16,6 +16,7 @@ const CODEX_HEADERS = {
   "user-agent": "codex_cli_rs/0.145.0",
   "x-client-request-id": "request-child",
   "x-codex-beta-features": "remote_compaction_v2",
+  "x-codex-turn-state": "turn_0123456789abcdef0123456789abcdef",
   "x-codex-turn-metadata": JSON.stringify({
     request_kind: "turn",
     thread_source: "subagent",
@@ -135,6 +136,7 @@ describe("Codex Responses metadata passthrough", () => {
       "User-Agent": ["codex", "cli"],
       "X-Client-Request-Id": 42,
       "X-Codex-Beta-Features": true,
+      "X-Codex-Turn-State": 123,
       "X-Codex-Turn-Metadata": { request_kind: "turn" },
       "X-Codex-Window-Id": 0,
       "X-OpenAI-Internal-Codex-Responses-Lite": false,
@@ -142,6 +144,7 @@ describe("Codex Responses metadata passthrough", () => {
       "user-agent": "codex, cli",
       "x-client-request-id": "42",
       "x-codex-beta-features": "true",
+      "x-codex-turn-state": "123",
       "x-codex-turn-metadata": "[object Object]",
       "x-codex-window-id": "0",
       "x-openai-internal-codex-responses-lite": "false",

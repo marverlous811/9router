@@ -119,15 +119,14 @@ export async function POST(request) {
     const configContent = stringifyTOML(parsed);
     await fs.writeFile(configPath, configContent);
 
-    // Update auth.json with OPENAI_API_KEY (Codex reads this first)
+    // Codex resolves the provider's env_key from auth.json. Preserve unrelated
+    // ChatGPT login fields while selecting API-key mode for 9Router.
     const authPath = getCodexAuthPath();
     let authData = {};
     try {
       const existingAuth = await fs.readFile(authPath, "utf-8");
       authData = JSON.parse(existingAuth);
     } catch { /* No existing auth */ }
-    
-    // Force apikey mode (keep existing tokens untouched for ChatGPT login reuse)
     authData.OPENAI_API_KEY = apiKey;
     authData.auth_mode = "apikey";
     await fs.writeFile(authPath, JSON.stringify(authData, null, 2));
