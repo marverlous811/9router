@@ -109,6 +109,18 @@ function expectChatCompletionsHeaders(headers) {
 }
 
 describe("Codex Responses metadata passthrough", () => {
+  it.each([
+    ["openai-compatible-chat-edited", "responses", true],
+    ["openai-compatible-responses-edited", "chat", false],
+  ])("uses stored API type over provider ID for %s", (provider, apiType, responses) => {
+    const headers = new DefaultExecutor(provider).buildHeaders({
+      apiKey: "router-secret", rawHeaders: { ...CODEX_HEADERS, ...SENSITIVE_HEADERS },
+      providerSpecificData: { apiType },
+    });
+    if (responses) expectNativeResponsesHeaders(headers);
+    else expectChatCompletionsHeaders(headers);
+  });
+
   it("defines the immutable Responses metadata allowlist", () => {
     expect(CODEX_RESPONSES_PASSTHROUGH_HEADERS).toEqual(CODEX_HEADER_NAMES);
     expect(Object.isFrozen(CODEX_RESPONSES_PASSTHROUGH_HEADERS)).toBe(true);

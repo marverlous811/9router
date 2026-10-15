@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildResponsesWebSocketUrl,
   buildUpstreamHeaders,
+  createWebSocketAgent,
   getRequestApiKey,
   isResponsesWebSocketPath,
   parseResponseCreate,
@@ -93,6 +94,20 @@ describe("Codex Responses WebSocket helpers", () => {
     expect(() => resolveWebSocketProxy("wss://api.example.com/v1/responses", {
       vercelRelayUrl: "https://relay.example",
     })).toThrow("do not support native WebSocket");
+  });
+
+  it("fails closed for missing or invalid strict proxies, even with NO_PROXY", () => {
+    const target = "wss://api.example.com/v1/responses";
+    expect(() => createWebSocketAgent(target, {
+      strictProxy: true, connectionProxyPoolId: "inactive-pool",
+    })).toThrow("proxy required but unavailable");
+    expect(() => createWebSocketAgent(target, {
+      strictProxy: true, connectionProxyEnabled: true, connectionProxyUrl: "invalid://proxy",
+    })).toThrow("proxy required but unavailable");
+    expect(resolveWebSocketProxy(target, {
+      strictProxy: true, connectionProxyEnabled: true,
+      connectionProxyUrl: "http://proxy.test:8080", connectionNoProxy: "*",
+    })).toBe("http://proxy.test:8080");
   });
 
   it("uses the matching HTTP or HTTPS environment proxy for the upstream protocol", () => {

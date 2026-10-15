@@ -4,6 +4,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import { selectCodexResponsesHeaders } from "open-sse/utils/codexHeaders.js";
 import { resolveOpenAICompatibleApiType } from "open-sse/services/provider.js";
 import { getSettings, validateApiKey } from "@/lib/db/index.js";
+import { canAccessPublicLlmApi } from "@/dashboardGuard.js";
+import { extractClientApiKey, getKeyAccessContext, enforceKeyAccess } from "./keyAccess.js";
 import { trackPendingRequest } from "@/lib/usageDb.js";
 import { saveUsageStats } from "open-sse/handlers/chatCore/requestDetail.js";
 import { extractUsage } from "open-sse/utils/usageTracking.js";
@@ -74,6 +76,13 @@ export function shouldBypassProxy(targetUrl, noProxy) {
 export function resolveWebSocketProxy(targetUrl, proxyOptions = {}) {
   if (proxyOptions?.vercelRelayUrl) {
     throw new Error("Relay proxy pools do not support native WebSocket Responses transport");
+  }
+
+  if (proxyOptions?.strictProxy) {
+    if (!proxyOptions.connectionProxyEnabled || !proxyOptions.connectionProxyUrl) {
+      throw new Error("WebSocket proxy required but unavailable");
+    }
+    return proxyOptions.connectionProxyUrl;
   }
 
   if (shouldBypassProxy(targetUrl, proxyOptions?.connectionNoProxy || process.env.NO_PROXY || process.env.no_proxy)) {
@@ -197,9 +206,22 @@ export function getRequestApiKey(rawHeaders = {}) {
   return typeof xApiKey === "string" ? xApiKey : null;
 }
 
-export async function authenticateResponsesWebSocket(rawHeaders = {}) {
+function toPolicyRequest(rawHeaders, url = "/v1/responses") {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(rawHeaders || {})) {
+    if (value != null) headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+  }
+  const parsedUrl = new URL(url, "http://localhost");
+  return { headers, url: parsedUrl.href, nextUrl: parsedUrl };
+}
+
+export async function authenticateResponsesWebSocket(rawHeaders = {}, url) {
   const settings = await getSettings();
-  const apiKey = getRequestApiKey(rawHeaders);
+  const request = toPolicyRequest(rawHeaders, url);
+  const apiKey = extractClientApiKey(request);
+  if (!await canAccessPublicLlmApi(request)) {
+    throw Object.assign(new Error("API key required for remote API access"), { status: 401, code: "invalid_api_key", type: "authentication_error" });
+  }
   if (!settings.requireApiKey) return apiKey;
   if (!apiKey) throw Object.assign(new Error("Missing API key"), { status: 401, code: "invalid_api_key", type: "authentication_error" });
   if (!await validateApiKey(apiKey)) {
@@ -228,7 +250,7 @@ function writeUpgradeError(socket, error) {
 
 async function authenticateUpgrade(request, socket) {
   try {
-    return await authenticateResponsesWebSocket(request.headers);
+    return await authenticateResponsesWebSocket(request.headers, request.url);
   } catch (error) {
     writeUpgradeError(socket, error);
     throw error;
@@ -292,10 +314,13 @@ async function resolveConnection(modelName, { turnState, apiKey } = {}) {
     modelInfo.provider,
     null,
     modelInfo.model,
-    affinity ? {
-      preferredConnectionId: affinity.connectionId,
-      strictPreferredConnection: true,
-    } : undefined,
+    {
+      requestedModel: modelName,
+      ...(affinity ? {
+        preferredConnectionId: affinity.connectionId,
+        strictPreferredConnection: true,
+      } : {}),
+    },
   );
   if (credentials?.preferredConnectionUnavailable) {
     clearCodexTurnAffinity({ turnState, apiKey });
@@ -436,6 +461,14 @@ class ResponsesWebSocketRelay {
     if (isBinary) throw Object.assign(new Error("Responses WebSocket accepts JSON text frames only"), { status: 400, code: "invalid_request_error", type: "invalid_request_error" });
 
     const { payload, model: requestedModel } = parseResponseCreate(data);
+    const policyRequest = toPolicyRequest(this.request.headers, this.request.url);
+    const denied = await enforceKeyAccess(await getKeyAccessContext(policyRequest), requestedModel);
+    if (denied) {
+      const body = await denied.json();
+      throw Object.assign(new Error(body.error?.message || "Model access denied"), {
+        status: denied.status, code: "model_access_denied", type: "invalid_request_error",
+      });
+    }
     if (!this.connection) {
       await this.connect(requestedModel);
     } else {
@@ -460,6 +493,8 @@ class ResponsesWebSocketRelay {
 
     const upstreamUrl = buildResponsesWebSocketUrl(baseUrl);
     const headers = buildUpstreamHeaders(this.connection.credentials, this.request.headers);
+    const settings = await getSettings();
+    Object.assign(headers, settings.providerOverrides?.[this.connection.provider]?.headers || {});
     log.info("CODEX-WS", `Opening ${this.connection.provider}/${this.connection.model} WebSocket upstream`);
 
     try {

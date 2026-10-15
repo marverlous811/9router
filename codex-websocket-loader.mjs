@@ -43,6 +43,8 @@ function resolveProjectSpecifier(specifier) {
 }
 
 export function resolve(specifier, context, nextResolve) {
+  // Next's extensionless server entry is accepted by webpack, but not native ESM.
+  if (specifier === "next/server") return nextResolve("next/server.js", context);
   const url = resolveProjectSpecifier(specifier);
   if (url) return { url, shortCircuit: true };
   return nextResolve(specifier, context);

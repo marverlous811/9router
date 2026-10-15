@@ -14,11 +14,24 @@ const mocks = vi.hoisted(() => ({
   clearAccountError: vi.fn(),
   trackPendingRequest: vi.fn(),
   saveUsageStats: vi.fn(),
+  canAccessPublicLlmApi: vi.fn(),
+  getKeyAccessContext: vi.fn(),
+  enforceKeyAccess: vi.fn(),
 }));
 
 vi.mock("@/lib/db/index.js", () => ({
   getSettings: vi.fn(async () => mocks.settings),
   validateApiKey: mocks.validateApiKey,
+}));
+
+vi.mock("@/dashboardGuard.js", () => ({
+  canAccessPublicLlmApi: mocks.canAccessPublicLlmApi,
+}));
+
+vi.mock("../../src/sse/services/keyAccess.js", async (importOriginal) => ({
+  ...await importOriginal(),
+  getKeyAccessContext: mocks.getKeyAccessContext,
+  enforceKeyAccess: mocks.enforceKeyAccess,
 }));
 
 vi.mock("@/lib/usageDb.js", () => ({
@@ -116,6 +129,9 @@ beforeEach(async () => {
   upstreamSockets = [];
   clients = [];
   mocks.settings = { requireApiKey: false };
+  mocks.canAccessPublicLlmApi.mockReset().mockResolvedValue(true);
+  mocks.getKeyAccessContext.mockReset().mockResolvedValue(null);
+  mocks.enforceKeyAccess.mockReset().mockResolvedValue(null);
   mocks.getModelInfo.mockReset().mockResolvedValue({ provider, model: "gpt-test" });
   mocks.getProviderCredentials.mockReset();
   mocks.checkAndRefreshToken.mockReset();
@@ -158,6 +174,52 @@ function gatewayUrl() {
 }
 
 describe("Codex Responses WebSocket relay", () => {
+  it("rejects remote anonymous upgrades even when requireApiKey is false", async () => {
+    mocks.canAccessPublicLlmApi.mockResolvedValue(false);
+    const client = new WebSocket(gatewayUrl());
+    clients.push(client);
+    const response = await waitForUnexpectedResponse(client);
+    expect(response.statusCode).toBe(401);
+    expect(mocks.getProviderCredentials).not.toHaveBeenCalled();
+    expect(upstreamSockets).toHaveLength(0);
+  });
+
+  it("enforces restricted-key model access before account selection on every frame", async () => {
+    const context = { keyId: "restricted", allow: ["mock/gpt-test"] };
+    mocks.getKeyAccessContext.mockResolvedValue(context);
+    const { client, opened } = connectClient(gatewayUrl(), {
+      headers: { "x-goog-api-key": "restricted-key" },
+    });
+    await opened;
+    mocks.enforceKeyAccess.mockResolvedValueOnce(new Response(JSON.stringify({
+      error: { message: "Model access denied" },
+    }), { status: 403 }));
+    const error = waitForMessage(client, text => JSON.parse(text).type === "error");
+    client.send(JSON.stringify({ type: "response.create", model: "mock/forbidden" }));
+    expect(JSON.parse(await error).error.code).toBe("model_access_denied");
+    expect(mocks.enforceKeyAccess).toHaveBeenCalledWith(context, "mock/forbidden");
+    expect(mocks.getProviderCredentials).not.toHaveBeenCalled();
+    expect(upstreamSockets).toHaveLength(0);
+  });
+
+  it("rechecks authorization for later creates and applies provider header overrides", async () => {
+    mocks.settings.providerOverrides = { [provider]: { headers: { "x-test-routing": "configured" } } };
+    const { client, opened } = connectClient(gatewayUrl());
+    await opened;
+    const connected = once(upstream, "connection");
+    client.send(JSON.stringify({ type: "response.create", model: "mock/gpt-test" }));
+    const [, request] = await connected;
+    expect(request.headers["x-test-routing"]).toBe("configured");
+    mocks.enforceKeyAccess.mockResolvedValue(new Response(JSON.stringify({
+      error: { message: "Access revoked" },
+    }), { status: 403 }));
+    const error = waitForMessage(client, text => JSON.parse(text).type === "error");
+    client.send(JSON.stringify({ type: "response.create", model: "mock/gpt-test" }));
+    expect(JSON.parse(await error).error.code).toBe("model_access_denied");
+    expect(mocks.enforceKeyAccess).toHaveBeenCalledTimes(2);
+    expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(1);
+  });
+
   it("authenticates before upgrade and does not open an upstream connection for an invalid key", async () => {
     mocks.settings = { requireApiKey: true };
     mocks.validateApiKey.mockResolvedValue(false);

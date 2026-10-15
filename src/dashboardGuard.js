@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import { getSettings, validateApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { verifyDashboardAuthToken } from "@/lib/auth/dashboardSession";
@@ -45,6 +44,7 @@ const ALWAYS_PROTECTED = [
   "/api/version/update",
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
+  "/api/oauth/zed/auto-import",
 ];
 
 // Require auth, but allow through if requireLogin is disabled
@@ -81,6 +81,7 @@ const LOCAL_ONLY_PATHS = [
   "/api/tunnel/disable",
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
+  "/api/oauth/zed/auto-import",
   "/api/auth/reset-password",
   "/api/headroom/start",
   "/api/headroom/stop",
@@ -152,7 +153,7 @@ async function hasValidApiKey(request) {
   return await validateApiKey(apiKey);
 }
 
-async function canAccessPublicLlmApi(request) {
+export async function canAccessPublicLlmApi(request) {
   if (isLocalRequest(request)) return true;
   if (await hasValidCliToken(request)) return true;
   return await hasValidApiKey(request);
@@ -191,6 +192,9 @@ function isPublicApi(pathname) {
   return PUBLIC_API_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
+// Shared with src/proxy.js — the mimo login branch must respect dashboard auth.
+export { isAuthenticated };
+
 export const __test__ = {
   isLocalRequest,
   isPublicLlmApi,
@@ -200,6 +204,8 @@ export const __test__ = {
 };
 
 export async function proxy(request) {
+  // Native WebSocket auth shares this policy without loading Next's HTTP runtime.
+  const { NextResponse } = await import("next/server");
   const { pathname } = request.nextUrl;
 
   // Local-only gate for spawn-capable / host-secret routes.

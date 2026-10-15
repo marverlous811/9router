@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   __test__,
   clearCodexTurnAffinity,
@@ -11,6 +11,16 @@ import {
 afterEach(() => __test__.clear());
 
 describe("Codex turn-state affinity", () => {
+  it("shares account ownership across separately loaded module instances", async () => {
+    const identity = { turnState: "turn-shared", apiKey: "client-a", provider: "test", model: "gpt-test" };
+    setCodexTurnAffinity({ ...identity, connectionId: "owner" });
+    vi.resetModules();
+    const secondModule = await import("../../src/sse/services/codexTurnAffinity.js");
+    expect(secondModule.getCodexTurnAffinity(identity)).toMatchObject({ connectionId: "owner" });
+    secondModule.clearCodexTurnAffinity(identity);
+    expect(getCodexTurnAffinity(identity)).toBeNull();
+  });
+
   it("pins a turn state to its selected account within one API-key scope", () => {
     setCodexTurnAffinity({
       turnState: "turn_123",

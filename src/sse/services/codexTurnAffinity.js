@@ -4,7 +4,9 @@ const MAX_TURN_STATE_LENGTH = 4096;
 const MAX_AFFINITIES = 5000;
 const TURN_AFFINITY_TTL_MS = 30 * 60_000;
 
-const affinities = new Map();
+// Native WebSocket modules and Next's bundled HTTP handlers share this process.
+const affinityStore = Symbol.for("9router.codexTurnAffinities");
+const affinities = globalThis[affinityStore] ||= new Map();
 
 function normalizeTurnState(value) {
   if (typeof value !== "string") return null;

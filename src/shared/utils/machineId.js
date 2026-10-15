@@ -1,9 +1,10 @@
-import { machineIdSync } from 'node-machine-id';
+import * as machineId from 'node-machine-id';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { DATA_DIR } from '@/lib/dataDir';
 
+const machineIdSync = machineId.machineIdSync || machineId.default?.machineIdSync;
 const MACHINE_ID_FILE = path.join(DATA_DIR, 'machine-id');
 const AUTH_DIR = path.join(DATA_DIR, 'auth');
 const CLI_SECRET_FILE = path.join(AUTH_DIR, 'cli-secret');

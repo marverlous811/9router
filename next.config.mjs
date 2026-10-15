@@ -20,8 +20,10 @@ const nextConfig = {
   // letter). That throw happens at module scope, so every consumer of `open` dies on
   // import — including xAI/Grok token refresh, which loads the OAuth service that imports
   // it. Keeping it external preserves the real `import.meta.url` at runtime.
+  // @aws-sdk/credential-providers reads ~/.aws/config and the SSO token cache at
+  // runtime and resolves credential plugins dynamically, so it must stay external.
   serverExternalPackages: [
-    "better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "open",
+    "better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "open", "@aws-sdk/credential-providers",
     // custom-server dynamically imports the native Codex Responses WebSocket relay.
     // Keep its runtime modules external so output tracing can place their dependencies intact.
     "ws", "https-proxy-agent", "socks-proxy-agent",
@@ -79,6 +81,10 @@ const nextConfig = {
       {
         source: "/responses",
         destination: "/api/v1/responses"
+      },
+      {
+        source: "/systemone",
+        destination: "/api/v1/systemone"
       },
       {
         source: "/v1beta/:path*",
